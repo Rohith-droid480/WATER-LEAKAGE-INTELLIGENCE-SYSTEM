@@ -8,6 +8,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+import evaluate
 import interfaces
 from replay_engine import (
     ReplaySession,
@@ -97,6 +98,13 @@ st.markdown(
         padding: 12px 16px;
         color: #d1fae5;
     }
+    .eval-card {
+        background: linear-gradient(135deg, rgba(30, 41, 59, 0.8), rgba(15, 23, 42, 0.8));
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 8px;
+        padding: 14px 18px;
+        margin-bottom: 12px;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -104,7 +112,7 @@ st.markdown(
 
 # Initialize Session State
 if "session" not in st.session_state:
-    st.session_state.session = create_replay_session()
+    st.session_state.session = create_replay_session(use_mock=False, max_steps=4032)
 
 session: ReplaySession = st.session_state.session
 
@@ -122,18 +130,58 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Interface status check
+# Interface status badge
+status_info = interfaces.get_interface_status()
 if session.is_mock:
-    st.info(
-        "ℹ️ **Interface Mode: MOCK HARNESS ACTIVE** — Using deterministic synthetic telemetry & baseline "
-        "for UI replay harness. (Alpha's core detection modules `data.py`, `baseline.py`, and `detector.py` "
-        "will bind automatically once integrated without modifying UI logic)."
+    st.warning(
+        "⚠️ **MOCK HARNESS ACTIVE** — Using synthetic placeholder telemetry and mock detector. "
+        "THIS IS NOT REAL BENCHMARK DETECTION."
+    )
+else:
+    st.success(
+        "✅ **REAL BATTLEDIM PIPELINE CONNECTED** — Historical 2018 diurnal baseline, "
+        "one-sided CUSUM detector, and chronological 2019 replay actively bound."
     )
 
 # --- SIDEBAR CONTROLS ---
 with st.sidebar:
     st.title("🎛️ Replay Controller")
     st.caption("Deterministic Chronological Execution")
+
+    # Mode Selector
+    telemetry_mode = st.radio(
+        "Dataset Source",
+        options=["Real BattLeDIM (2019 Telemetry)", "Synthetic Mock Harness (Testing)"],
+        index=1 if session.is_mock else 0,
+        help="Select whether to replay real BattLeDIM 2019 benchmark data or synthetic testing harness.",
+    )
+    is_mock_selected = "Mock" in telemetry_mode
+    if is_mock_selected != session.is_mock:
+        st.session_state.session = create_replay_session(
+            use_mock=is_mock_selected,
+            max_steps=150 if is_mock_selected else 4032,
+        )
+        st.rerun()
+
+    # Replay slice control for real dataset
+    if not session.is_mock:
+        dataset_slice = st.selectbox(
+            "Replay Horizon",
+            options=["14 Days (4,032 observations)", "1 Month (8,640 observations)", "Full Year (105,120 observations)"],
+            index=0,
+            help="Select replay window duration for the benchmark run.",
+        )
+        slice_map = {
+            "14 Days (4,032 observations)": 4032,
+            "1 Month (8,640 observations)": 8640,
+            "Full Year (105,120 observations)": 105120,
+        }
+        target_steps = slice_map[dataset_slice]
+        if session.total_observations != target_steps and session.is_ready:
+            st.session_state.session = create_replay_session(use_mock=False, max_steps=target_steps)
+            st.rerun()
+
+    st.divider()
 
     # Playback Control Buttons
     c1, c2 = st.columns(2)
@@ -170,8 +218,8 @@ with st.sidebar:
     st.subheader("⚙️ Replay Settings")
     speed_batch = st.select_slider(
         "Replay Speed (Rows / Tick)",
-        options=[1, 2, 5, 10, 20],
-        value=session.speed_batch_size,
+        options=[1, 5, 10, 25, 50, 100],
+        value=session.speed_batch_size if session.speed_batch_size in [1, 5, 10, 25, 50, 100] else 1,
         help="Number of sequential 5-minute observations processed per update tick.",
     )
     session.speed_batch_size = speed_batch
@@ -252,7 +300,7 @@ def render_live_monitoring_fragment():
     with m2:
         obs_val = f"{latest_record[f'{selected_channel}_observed']:.2f}" if latest_record else "—"
         exp_val = f"{latest_record[f'{selected_channel}_expected']:.2f}" if latest_record else "—"
-        unit = "m³/h" if "FLOW" in selected_channel else "m"
+        unit = "m³/h" if "FLOW" in selected_channel.upper() or selected_channel.startswith("p") or selected_channel.startswith("PUMP") else "m"
         st.markdown(
             f"""
             <div class="metric-card">
@@ -279,7 +327,7 @@ def render_live_monitoring_fragment():
 
     with m4:
         cusum_val = f"{latest_record[f'{selected_channel}_cusum']:.2f}" if latest_record else "0.00"
-        thresh_val = f"{latest_record[f'{selected_channel}_threshold']:.1f}" if latest_record else "5.0"
+        thresh_val = f"{latest_record[f'{selected_channel}_threshold']:.1f}" if latest_record else "8.0"
         is_crossing = float(cusum_val) > float(thresh_val) if latest_record else False
         color_badge = "#ef4444" if is_crossing else "#10b981"
         st.markdown(
@@ -295,18 +343,21 @@ def render_live_monitoring_fragment():
 
     st.write("")
 
-    # --- MIDDLE SECTION: 3 SYNCHRONIZED CHARTS ---
+    # --- MIDDLE SECTION: TABS ---
     if session.chart_history:
         history_df = pd.DataFrame(session.chart_history)
         history_df["timestamp_dt"] = pd.to_datetime(history_df["timestamp"])
 
-        tab_charts, tab_evidence, tab_logs = st.tabs(
-            ["📈 Real-Time Telemetry & CUSUM Traces", "⚠️ Incident Evidence Log", "📋 Prediction Audit Log"]
+        tab_charts, tab_evidence, tab_logs, tab_eval = st.tabs(
+            [
+                "📈 Real-Time Telemetry & CUSUM Traces",
+                "⚠️ Incident Evidence Log",
+                "📋 Prediction Audit Log",
+                "🎯 Ground-Truth Evaluation",
+            ]
         )
 
         with tab_charts:
-            c_left, c_right = st.columns([3, 1])
-
             # Chart 1: Observed vs Expected Readings
             st.markdown(f"##### 1. Observed vs Expected Baseline — `{selected_channel}`")
             chart_1_data = history_df.set_index("timestamp_dt")[
@@ -389,6 +440,56 @@ def render_live_monitoring_fragment():
                 file_name=f"aquasentinel_predictions_{session.run_id[:8]}.csv",
                 mime="text/csv",
             )
+
+        with tab_eval:
+            st.markdown("##### Post-Run Ground-Truth Evaluation (Beta)")
+            st.caption(
+                "Evaluation is strictly procedurally held-out: Ground-truth event metadata is accessed "
+                "only AFTER predictions are generated, never during live replay."
+            )
+
+            if session.is_mock:
+                st.info("ℹ️ Evaluation requires running against real BattLeDIM benchmark data. Switch Dataset Source to Real BattLeDIM in the sidebar.")
+            else:
+                # Load ground-truth events for the current year
+                events_2019 = evaluate.load_event_metadata("data", year=2019)
+                try:
+                    summary = evaluate.evaluate_predictions(session.prediction_log, events_2019)
+
+                    e1, e2, e3, e4 = st.columns(4)
+                    with e1:
+                        st.metric("Eligible Leak Events", summary.total_events_eligible)
+                    with e2:
+                        st.metric("Detected Events (Strict / Lenient)", f"{summary.events_detected_strict} / {summary.events_detected_lenient}")
+                    with e3:
+                        st.metric("Recall (Strict / Lenient)", f"{summary.recall_strict:.1%} / {summary.recall_lenient:.1%}")
+                    with e4:
+                        st.metric("Precision (Lenient)", f"{summary.precision_lenient:.1%}")
+
+                    st.markdown("###### Detailed Evaluation Metrics")
+                    m_c1, m_c2, m_c3 = st.columns(3)
+                    with m_c1:
+                        st.markdown(f"• **Missed Events:** {summary.events_missed}")
+                        st.markdown(f"• **Total Alert Steps:** {summary.total_alerts_count}")
+                    with m_c2:
+                        st.markdown(f"• **Unmatched Episodes:** {summary.unmatched_alerts_count}")
+                        st.markdown(f"• **Unmatched / Sim Month:** {summary.unmatched_alerts_per_simulated_month}")
+                    with m_c3:
+                        st.markdown(f"• **Evaluable Delays:** {summary.delays_evaluable_count}")
+                        med_del = f"{summary.median_delay_hours}h" if summary.median_delay_hours is not None else "N/A"
+                        st.markdown(f"• **Median Delay:** {med_del}")
+
+                    st.markdown("###### Recall by Leak Size")
+                    for size_lbl, stats in summary.recall_by_diameter.items():
+                        st.write(f"- **{size_lbl}:** {stats['detected']} / {stats['eligible']} detected ({stats['recall']:.1%})")
+
+                    st.markdown("###### Limitations & Truth Disclosures")
+                    for lim in summary.limitations:
+                        st.info(f"📌 {lim}")
+
+                except Exception as ex:
+                    st.warning(f"Evaluation pending: {ex}")
+
     else:
         st.info("Replay initialized in READY state. Click **▶ Play** or **⏭ Step Single Row** to begin sequential replay.")
 

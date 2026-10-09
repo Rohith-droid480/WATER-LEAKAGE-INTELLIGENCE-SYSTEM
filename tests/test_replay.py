@@ -172,7 +172,7 @@ def test_end_of_data_control():
 
 def test_incident_evidence_capture():
     """Verify threshold crossing generates suspected incident evidence with disclaimer."""
-    session = create_replay_session()
+    session = create_replay_session(use_mock=True)
 
     # Step until past anomalous injected interval (step 35 to 55)
     step_session(session, batch_size=55)

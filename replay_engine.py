@@ -70,17 +70,22 @@ def create_replay_session(
     baseline_model: Optional[Any] = None,
     chart_buffer_max_len: int = 120,
     speed_batch_size: int = 1,
+    use_mock: bool = False,
+    max_steps: Optional[int] = None,
 ) -> ReplaySession:
     """Create a new replay session with a fresh run_id and clean initial state."""
     if observations is None or channel_configs is None or baseline_model is None:
-        dataset_obs, d_configs, b_model = interfaces.load_replay_dataset()
+        dataset_obs, d_configs, b_model = interfaces.load_replay_dataset(
+            use_mock=use_mock, max_steps=max_steps
+        )
         observations = observations or dataset_obs
         channel_configs = channel_configs or d_configs
         baseline_model = baseline_model or b_model
 
     run_id = str(uuid.uuid4())
-    detector_state = interfaces.init_detector_state(channel_configs, run_id)
+    detector_state = interfaces.init_detector_state(channel_configs, run_id, use_mock=use_mock)
     status_info = interfaces.get_interface_status()
+    is_mock = use_mock or status_info["is_mock"]
 
     return ReplaySession(
         run_id=run_id,
@@ -96,14 +101,16 @@ def create_replay_session(
         prediction_log=[],
         incident_log=[],
         speed_batch_size=speed_batch_size,
-        is_mock=status_info["is_mock"],
+        is_mock=is_mock,
     )
 
 
 def reset_session(session: ReplaySession) -> ReplaySession:
     """Reset session: generates fresh run_id and wipes all runtime buffers."""
     new_run_id = str(uuid.uuid4())
-    detector_state = interfaces.init_detector_state(session.channel_configs, new_run_id)
+    detector_state = interfaces.init_detector_state(
+        session.channel_configs, new_run_id, use_mock=session.is_mock
+    )
 
     session.run_id = new_run_id
     session.status = "READY"
@@ -171,6 +178,7 @@ def step_session(session: ReplaySession, batch_size: Optional[int] = None) -> Li
             observation=obs,
             baseline_model=session.baseline_model,
             channel_configs=session.channel_configs,
+            use_mock=session.is_mock,
         )
 
         step_results.append(step_res)
