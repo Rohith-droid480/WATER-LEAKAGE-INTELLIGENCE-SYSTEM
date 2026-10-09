@@ -1,0 +1,4 @@
+1. Final problem statement
+AI-powered early water-leak detection
+FINAL PROBLEM STATEMENT
+How can municipal water-utility operators identify possible pipe leaks early from pressure and flow measurements, despite normal changes in water demand and misleading sensor readings, so that suspected leaks can be investigated before water continues to be lost?
